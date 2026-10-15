@@ -286,6 +286,10 @@ async def carregar_catalogo(query, context, rede, pagina=0):
         f"📋 CATÁLOGO {rede.upper()}\n"
         "━━━━━━━━━━━━━━━━━━\n"
         "🚀 Impulsione seu perfil com os serviços disponíveis!\n\n"
+        "💰 INFORMAÇÕES SOBRE OS PREÇOS\n"
+        "📌 Os valores exibidos são referentes a 1.000 unidades.\n"
+        "🔢 Escolha a quantidade desejada, de 50 a 1.000 unidades, respeitando os limites de cada serviço.\n"
+        "🧮 O valor total será calculado conforme a quantidade escolhida.\n\n"
         f"🛍️ {len(servicos)} serviços disponíveis\n"
         f"📄 Página {pagina + 1} de {total_paginas}\n\n"
         "👇 Escolha o serviço desejado abaixo."
@@ -1664,8 +1668,8 @@ async def monitorar_conclusao_pedidos(app):
                             chat_id=int(pedido["telegram_id"]),
                             text=(
                                 f"✅ Pedido #{order_id} concluído!\n\n"
-                                "O fornecedor confirmou a conclusão "
-                                "do seu serviço.\n"
+                                "A CONCLUSÃO DO SEU SERVIÇO FOI CONFIRMADA.\n"
+                                ""
                                 "Obrigado pela preferência!"
                             ),
                         )
