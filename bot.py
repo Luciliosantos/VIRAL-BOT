@@ -375,11 +375,12 @@ async def iniciar_compra(query, context, service_id, rede, pagina):
             "comments": "",
         }
 
-        await query.edit_message_text(
+        texto_compra = (
             f"🛒 COMPRA: {servico.get('name', 'Serviço')}\n\n"
             "Envie o link do perfil, publicação ou página onde deseja aplicar o serviço.\n\n"
             "Envie /cancelar para desistir."
         )
+        await query.message.reply_text(texto_compra)
     except Exception:
         logger.exception("Erro ao iniciar compra")
         await query.edit_message_text("Não consegui iniciar a compra. Tente novamente.")
@@ -590,16 +591,19 @@ async def finalizar_compra_pix(mensagem, context, compra, usuario_id):
         ]])
 
         await mensagem.reply_text(
-            f"✅ COBRANÇA PIX GERADA\n\n"
-            f"Pedido: #{order_id}\n"
-            f"Valor: R$ {Decimal(compra['total']):.2f}\n\n"
-            "Copie o código Pix abaixo e pague no seu banco:\n\n"
-            f"<code>{pix['pix_copia_cola']}</code>\n\n"
-            "Depois do pagamento, toque em Verificar pagamento.",
+            f"💠 PIX — PAGAMENTO\n\n"
+            f"📦 Pedido: #{order_id}\n"
+            f"💰 Valor: R$ {Decimal(compra['total']):.2f}\n\n"
+            "📋 CÓDIGO PIX COPIA E COLA:"
+        )
+        await mensagem.reply_text(
+            f"<pre>{pix['pix_copia_cola']}</pre>",
             parse_mode="HTML",
+        )
+        await mensagem.reply_text(
+            "Após pagar, toque em Verificar pagamento.",
             reply_markup=teclado,
         )
-
     except MercadoPagoError:
         logger.exception("Falha ao gerar Pix")
         context.user_data.pop("compra", None)
@@ -712,20 +716,27 @@ async def enviar_pix_recarga(mensagem, context, telegram_id, email, valor):
 
         texto_pix = resultado["pix_copia_cola"]
         await mensagem.reply_text(
-            f"💠 RECARGA DE SALDO\n\n"
-            f"Valor: R$ {valor:.2f}\n"
-            f"Status: aguardando pagamento\n\n"
-            f"Pix copia e cola:\n\n{texto_pix}\n\n"
-            "Após pagar, toque em Verificar pagamento.",
+            f"💠 PIX — RECARGA DE SALDO\n\n"
+            f"💰 Valor: R$ {valor:.2f}\n"
+            "📋 CÓDIGO PIX COPIA E COLA:"
+        )
+        await mensagem.reply_text(
+            f"<pre>{texto_pix}</pre>",
+            parse_mode="HTML",
             reply_markup=InlineKeyboardMarkup([[
+
+            ], [
                 InlineKeyboardButton(
                     "🔎 Verificar pagamento",
                     callback_data=f"pixcheck:{payment_local_id}",
-                api_kwargs={"style": "primary"})
+                    api_kwargs={"style": "success"},
+                )
             ], [
                 InlineKeyboardButton(
-                    "💰 Meu saldo", callback_data="saldo"
-                , api_kwargs={"style": "primary"})
+                    "💰 Meu saldo",
+                    callback_data="saldo",
+                    api_kwargs={"style": "primary"},
+                )
             ]]),
         )
     except Exception:
@@ -1152,7 +1163,14 @@ async def mostrar_servico(query, context, service_id, rede, pagina):
         ], [
             InlineKeyboardButton("🏠 Menu principal", callback_data="inicio", api_kwargs={"style": "primary"})
         ]])
-        await query.edit_message_text(texto, reply_markup=teclado)
+        if query.message and query.message.photo:
+            await query.edit_message_caption(
+                caption=texto, reply_markup=teclado
+            )
+        else:
+            await query.edit_message_text(
+                texto, reply_markup=teclado
+            )
 
     except (SMMAPIError, ValueError, TypeError):
         logger.exception("Falha ao consultar detalhes do serviço")
@@ -1278,7 +1296,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("Identificador de pagamento inválido.")
 
     elif data == "adicionar_saldo":
-        await query.edit_message_text(
+        await query.message.reply_text(
             "➕ ADICIONAR SALDO\n\nEscolha o valor da recarga:",
             reply_markup=InlineKeyboardMarkup([
                 [
