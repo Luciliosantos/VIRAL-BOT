@@ -80,17 +80,33 @@ def menu_principal():
     botoes = []
     for i in range(0, len(redes), 2):
         linha = [
-            InlineKeyboardButton(nome, callback_data=f"rede_{rede}")
+            InlineKeyboardButton(
+                nome,
+                callback_data=f"rede_{rede}",
+                api_kwargs={"style": "success"},
+            )
             for nome, rede in redes[i:i + 2]
         ]
         botoes.append(linha)
 
     botoes.append([
-        InlineKeyboardButton("💰 Meu saldo", callback_data="saldo"),
-        InlineKeyboardButton("📦 Meus pedidos", callback_data="pedidos"),
+        InlineKeyboardButton(
+            "💰 Meu saldo",
+            callback_data="saldo",
+            api_kwargs={"style": "danger"},
+        ),
+        InlineKeyboardButton(
+            "📦 Meus pedidos",
+            callback_data="pedidos",
+            api_kwargs={"style": "danger"},
+        ),
     ])
     botoes.append([
-        InlineKeyboardButton("🎧 Suporte", callback_data="suporte")
+        InlineKeyboardButton(
+            "🎧 Suporte",
+            callback_data="suporte",
+            api_kwargs={"style": "danger"},
+        )
     ])
 
     return InlineKeyboardMarkup(botoes)
@@ -99,15 +115,15 @@ def menu_admin():
         [InlineKeyboardButton(
             "💰 Configurar lucro (%)",
             callback_data="admin_lucro"
-        )],
+        , api_kwargs={"style": "primary"})],
         [InlineKeyboardButton(
             "📊 Consultar configuração",
             callback_data="admin_config"
-        )],
+        , api_kwargs={"style": "primary"})],
         [InlineKeyboardButton(
             "⬅️ Menu principal",
             callback_data="inicio"
-        )],
+        , api_kwargs={"style": "primary"})],
     ])
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -227,7 +243,7 @@ async def carregar_catalogo(query, context, rede, pagina=0):
         await query.edit_message_text(
             "Não foi possível carregar os serviços agora. Tente novamente.",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("⬅️ Menu", callback_data="inicio")
+                InlineKeyboardButton("⬅️ Menu", callback_data="inicio", api_kwargs={"style": "primary"})
             ]]),
         )
         return
@@ -236,7 +252,7 @@ async def carregar_catalogo(query, context, rede, pagina=0):
         await query.edit_message_text(
             f"Nenhum serviço encontrado para {rede.title()}.",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("⬅️ Voltar", callback_data="inicio")
+                InlineKeyboardButton("⬅️ Voltar", callback_data="inicio", api_kwargs={"style": "primary"})
             ]]),
         )
         return
@@ -260,7 +276,7 @@ async def carregar_catalogo(query, context, rede, pagina=0):
             botoes.append([InlineKeyboardButton(
                 f"{nome} — R$ {preco}",
                 callback_data=f"servico:{sid}:{rede}:{pagina}"
-            )])
+            , api_kwargs={"style": "primary"})])
         except (ValueError, TypeError):
             continue
 
@@ -269,18 +285,18 @@ async def carregar_catalogo(query, context, rede, pagina=0):
         navegacao.append(InlineKeyboardButton(
             "⬅️ Anterior",
             callback_data=f"catalogo:{rede}:{pagina - 1}"
-        ))
+        , api_kwargs={"style": "primary"}))
     if pagina + 1 < total_paginas:
         navegacao.append(InlineKeyboardButton(
             "Próxima ➡️",
             callback_data=f"catalogo:{rede}:{pagina + 1}"
-        ))
+        , api_kwargs={"style": "primary"}))
     if navegacao:
         botoes.append(navegacao)
 
     botoes.append([InlineKeyboardButton(
         "⬅️ Menu principal", callback_data="inicio"
-    )])
+    , api_kwargs={"style": "primary"})])
 
     texto = (
         f"📋 CATÁLOGO {rede.upper()}\n"
@@ -295,17 +311,16 @@ async def carregar_catalogo(query, context, rede, pagina=0):
         "👇 Escolha o serviço desejado abaixo."
     )
     mensagem = query.message
+    teclado = InlineKeyboardMarkup(botoes)
     if mensagem and mensagem.photo:
-        await mensagem.delete()
-        await context.bot.send_message(
-            chat_id=mensagem.chat_id,
-            text=texto,
-            reply_markup=InlineKeyboardMarkup(botoes),
+        await query.edit_message_caption(
+            caption=texto,
+            reply_markup=teclado,
         )
     else:
         await query.edit_message_text(
             texto,
-            reply_markup=InlineKeyboardMarkup(botoes),
+            reply_markup=teclado,
         )
 
 
@@ -332,12 +347,12 @@ async def iniciar_compra(query, context, service_id, rede, pagina):
                     InlineKeyboardButton(
                         "🔄 Atualizar catálogo",
                         callback_data=f"catalogo:{rede}:{pagina}"
-                    )
+                    , api_kwargs={"style": "primary"})
                 ], [
                     InlineKeyboardButton(
                         "🏠 Menu principal",
                         callback_data="inicio"
-                    )
+                    , api_kwargs={"style": "primary"})
                 ]]),
             )
             return
@@ -514,13 +529,13 @@ async def processar_texto_compra(update, context):
                 InlineKeyboardButton(
                     "✅ Estou ciente — Continuar",
                     callback_data="confirmar_publico",
-                )
+                api_kwargs={"style": "primary"})
             ],
             [
                 InlineKeyboardButton(
                     "❌ Cancelar compra",
                     callback_data="cancelar_compra",
-                )
+                api_kwargs={"style": "danger"})
             ],
         ])
 
@@ -571,7 +586,7 @@ async def finalizar_compra_pix(mensagem, context, compra, usuario_id):
             InlineKeyboardButton(
                 "🔎 Verificar pagamento",
                 callback_data=f"pixcheck:{payment_local_id}",
-            )
+            api_kwargs={"style": "primary"})
         ]])
 
         await mensagem.reply_text(
@@ -646,7 +661,7 @@ async def finalizar_compra_pix(mensagem, context, compra, usuario_id):
                 InlineKeyboardButton(
                     "🔎 Verificar pagamento",
                     callback_data=f"pixcheck:{payment_local_id}",
-                )
+                api_kwargs={"style": "primary"})
             ]])
 
             await mensagem.reply_text(
@@ -706,11 +721,11 @@ async def enviar_pix_recarga(mensagem, context, telegram_id, email, valor):
                 InlineKeyboardButton(
                     "🔎 Verificar pagamento",
                     callback_data=f"pixcheck:{payment_local_id}",
-                )
+                api_kwargs={"style": "primary"})
             ], [
                 InlineKeyboardButton(
                     "💰 Meu saldo", callback_data="saldo"
-                )
+                , api_kwargs={"style": "primary"})
             ]]),
         )
     except Exception:
@@ -759,9 +774,9 @@ async def verificar_recarga_pix(query, payment_local_id, pagamento):
                 InlineKeyboardButton(
                     "🔎 Verificar novamente",
                     callback_data=f"pixcheck:{payment_local_id}",
-                )
+                api_kwargs={"style": "primary"})
             ], [
-                InlineKeyboardButton("💰 Meu saldo", callback_data="saldo")
+                InlineKeyboardButton("💰 Meu saldo", callback_data="saldo", api_kwargs={"style": "primary"})
             ]]),
         )
         return
@@ -784,9 +799,9 @@ async def verificar_recarga_pix(query, payment_local_id, pagamento):
             f"Valor adicionado: R$ {esperado:.2f}\n"
             f"Saldo disponível: R$ {saldo:.2f}",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("💰 Meu saldo", callback_data="saldo")
+                InlineKeyboardButton("💰 Meu saldo", callback_data="saldo", api_kwargs={"style": "primary"})
             ], [
-                InlineKeyboardButton("🏠 Menu principal", callback_data="inicio")
+                InlineKeyboardButton("🏠 Menu principal", callback_data="inicio", api_kwargs={"style": "primary"})
             ]]),
         )
     else:
@@ -803,7 +818,7 @@ async def verificar_recarga_pix(query, payment_local_id, pagamento):
                 "✅ Esta recarga já foi confirmada anteriormente.\n\n"
                 f"Saldo disponível: R$ {saldo:.2f}",
                 reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("💰 Meu saldo", callback_data="saldo")
+                    InlineKeyboardButton("💰 Meu saldo", callback_data="saldo", api_kwargs={"style": "primary"})
                 ]]),
             )
         else:
@@ -843,7 +858,7 @@ async def processar_compra_com_saldo(query, context):
             botoes = [[InlineKeyboardButton(
                 "💠 Pagar com Pix",
                 callback_data="comprar_com_pix",
-            )]]
+            api_kwargs={"style": "success"})]]
             await query.message.reply_text(
                 f"Saldo insuficiente. Disponível: R$ {saldo:.2f}.",
                 reply_markup=InlineKeyboardMarkup(botoes),
@@ -974,7 +989,7 @@ async def verificar_pix(query, context, payment_local_id):
                     InlineKeyboardButton(
                         "🔎 Verificar novamente",
                         callback_data=f"pixcheck:{payment_local_id}",
-                    )
+                    api_kwargs={"style": "primary"})
                 ]]),
             )
             return
@@ -1104,7 +1119,7 @@ async def mostrar_servico(query, context, service_id, rede, pagina):
                     InlineKeyboardButton(
                         "⬅️ Catálogo",
                         callback_data=f"catalogo:{rede}:{pagina}"
-                    )
+                    , api_kwargs={"style": "primary"})
                 ]]),
             )
             return
@@ -1128,14 +1143,14 @@ async def mostrar_servico(query, context, service_id, rede, pagina):
         [InlineKeyboardButton(
             "🛒 Comprar agora",
             callback_data=f"comprar:{service_id}:{rede}:{pagina}"
-        )],
+        , api_kwargs={"style": "success"})],
         [
             InlineKeyboardButton(
                 "⬅️ Voltar ao catálogo",
                 callback_data=f"catalogo:{rede}:{pagina}"
-            )
+            , api_kwargs={"style": "primary"})
         ], [
-            InlineKeyboardButton("🏠 Menu principal", callback_data="inicio")
+            InlineKeyboardButton("🏠 Menu principal", callback_data="inicio", api_kwargs={"style": "primary"})
         ]])
         await query.edit_message_text(texto, reply_markup=teclado)
 
@@ -1147,7 +1162,7 @@ async def mostrar_servico(query, context, service_id, rede, pagina):
                 InlineKeyboardButton(
                     "⬅️ Voltar",
                     callback_data=f"catalogo:{rede}:{pagina}"
-                )
+                , api_kwargs={"style": "primary"})
             ]]),
         )
 
@@ -1214,16 +1229,16 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             botoes.append([InlineKeyboardButton(
                 f"💰 Pagar com saldo (R$ {total:.2f})",
                 callback_data="comprar_com_saldo",
-            )])
+            api_kwargs={"style": "success"})])
 
         botoes.append([InlineKeyboardButton(
             f"💠 Pagar com Pix (R$ {total:.2f})",
             callback_data="comprar_com_pix",
-        )])
+        api_kwargs={"style": "success"})])
         botoes.append([InlineKeyboardButton(
             "❌ Cancelar compra",
             callback_data="cancelar_compra",
-        )])
+        api_kwargs={"style": "danger"})])
 
         await query.edit_message_text(
             "💳 ESCOLHA A FORMA DE PAGAMENTO\n\n"
@@ -1267,15 +1282,15 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "➕ ADICIONAR SALDO\n\nEscolha o valor da recarga:",
             reply_markup=InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("R$ 5", callback_data="recarga_valor:5"),
-                    InlineKeyboardButton("R$ 10", callback_data="recarga_valor:10"),
+                    InlineKeyboardButton("R$ 5", callback_data="recarga_valor:5", api_kwargs={"style": "primary"}),
+                    InlineKeyboardButton("R$ 10", callback_data="recarga_valor:10", api_kwargs={"style": "primary"}),
                 ],
                 [
-                    InlineKeyboardButton("R$ 20", callback_data="recarga_valor:20"),
-                    InlineKeyboardButton("R$ 50", callback_data="recarga_valor:50"),
+                    InlineKeyboardButton("R$ 20", callback_data="recarga_valor:20", api_kwargs={"style": "primary"}),
+                    InlineKeyboardButton("R$ 50", callback_data="recarga_valor:50", api_kwargs={"style": "primary"}),
                 ],
-                [InlineKeyboardButton("R$ 100", callback_data="recarga_valor:100")],
-                [InlineKeyboardButton("⬅️ Voltar", callback_data="saldo")],
+                [InlineKeyboardButton("R$ 100", callback_data="recarga_valor:100", api_kwargs={"style": "primary"})],
+                [InlineKeyboardButton("⬅️ Voltar", callback_data="saldo", api_kwargs={"style": "primary"})],
             ]),
         )
     elif data.startswith("recarga_valor:"):
@@ -1302,12 +1317,12 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Adicione saldo por Pix para utilizar sua carteira."
         )
         teclado_saldo = InlineKeyboardMarkup([
-            [InlineKeyboardButton("➕  Adicionar saldo", callback_data="adicionar_saldo")],
-            [InlineKeyboardButton("⬅️ Voltar", callback_data="inicio")],
+            [InlineKeyboardButton("➕  Adicionar saldo", callback_data="adicionar_saldo", api_kwargs={"style": "success"})],
+            [InlineKeyboardButton("⬅️ Voltar", callback_data="inicio", api_kwargs={"style": "primary"})],
         ])
         if query.message and query.message.photo:
-            await query.message.reply_text(
-                texto_saldo, reply_markup=teclado_saldo
+            await query.edit_message_caption(
+                caption=texto_saldo, reply_markup=teclado_saldo
             )
         else:
             await query.edit_message_text(
@@ -1322,11 +1337,11 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton(
                     "➕ Adicionar saldo",
                     callback_data="adicionar_saldo"
-                )],
+                , api_kwargs={"style": "success"})],
                 [InlineKeyboardButton(
                     "⬅️ Voltar",
                     callback_data="inicio"
-                )],
+                , api_kwargs={"style": "primary"})],
             ]),
         )
     elif data == "pedidos":
@@ -1348,10 +1363,10 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ).fetchall()
 
         if not pedidos:
-            await (query.message.reply_text if mensagem_com_foto else query.edit_message_text)(
+            await (query.edit_message_caption if mensagem_com_foto else query.edit_message_text)(
                 "📦 Você ainda não tem pedidos registrados.",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⬅️ Voltar", callback_data="inicio")]
+                    [InlineKeyboardButton("⬅️ Voltar", callback_data="inicio", api_kwargs={"style": "primary"})]
                 ])
             )
         else:
@@ -1365,11 +1380,11 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"📌 Status: {pedido['status']}\n"
                     f"📅 Data: {pedido['created_at']}\n\n"
                 )
-            await (query.message.reply_text if mensagem_com_foto else query.edit_message_text)(
+            await (query.edit_message_caption if mensagem_com_foto else query.edit_message_text)(
                 texto,
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Atualizar", callback_data="pedidos")],
-                    [InlineKeyboardButton("⬅️ Voltar", callback_data="inicio")]
+                    [InlineKeyboardButton("🔄 Atualizar", callback_data="pedidos", api_kwargs={"style": "primary"})],
+                    [InlineKeyboardButton("⬅️ Voltar", callback_data="inicio", api_kwargs={"style": "primary"})]
                 ])
             )
 
@@ -1377,7 +1392,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             "🎧 Entre em contato com o administrador para obter suporte.",
             reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("⬅️ Voltar", callback_data="inicio")
+                InlineKeyboardButton("⬅️ Voltar", callback_data="inicio", api_kwargs={"style": "primary"})
             ]]),
         )
 
