@@ -99,3 +99,45 @@ class SMMClient:
         if not isinstance(result, dict) or not result.get("order"):
             raise SMMAPIError("A API não confirmou a criação do pedido.")
         return result
+
+    async def solicitar_reposicao(self, provider_order_id):
+        """Solicita reposição usando o ID do pedido no fornecedor."""
+        provider_order_id = str(provider_order_id or "").strip()
+        if not provider_order_id.isdigit():
+            raise SMMAPIError("ID do pedido do fornecedor inválido.")
+
+        result = await self.request(
+            "refill",
+            order=provider_order_id,
+        )
+
+        if not isinstance(result, dict) or not result.get("refill"):
+            raise SMMAPIError(
+                "O fornecedor não confirmou a solicitação de reposição."
+            )
+
+        refill_id = str(result["refill"]).strip()
+        if not refill_id.isdigit():
+            raise SMMAPIError(
+                "A API retornou um ID de reposição inválido."
+            )
+
+        return {"refill": refill_id}
+
+    async def consultar_status_reposicao(self, refill_id):
+        """Consulta o estado de uma reposição pelo ID do fornecedor."""
+        refill_id = str(refill_id or "").strip()
+        if not refill_id.isdigit():
+            raise SMMAPIError("ID da reposição inválido.")
+
+        result = await self.request(
+            "refill_status",
+            refill=refill_id,
+        )
+
+        if not isinstance(result, dict) or not result.get("status"):
+            raise SMMAPIError(
+                "O fornecedor não retornou o status da reposição."
+            )
+
+        return result

@@ -36,6 +36,16 @@ def init_db():
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
         );
 
+        CREATE TABLE IF NOT EXISTS refills (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL UNIQUE,
+            telegram_id INTEGER NOT NULL,
+            provider_order_id TEXT NOT NULL,
+            provider_refill_id TEXT UNIQUE,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         CREATE TABLE IF NOT EXISTS payments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             telegram_id INTEGER NOT NULL,
@@ -50,6 +60,95 @@ def init_db():
         INSERT OR IGNORE INTO settings (key, value)
         VALUES ('profit_percent', '30');
         """)
+
+
+def migrar_colunas_reembolso():
+    with connect() as db:
+        colunas = {
+            row["name"]
+            for row in db.execute("PRAGMA table_info(orders)").fetchall()
+        }
+        if "refunded" not in colunas:
+            db.execute(
+                "ALTER TABLE orders ADD COLUMN refunded INTEGER NOT NULL DEFAULT 0"
+            )
+        if "refund_notified" not in colunas:
+            db.execute(
+                "ALTER TABLE orders ADD COLUMN refund_notified INTEGER NOT NULL DEFAULT 0"
+            )
+
+
+def reembolsar_pedido_cancelado(order_id):
+    """Devolve uma única vez o valor pago por pedido cancelado."""
+    with connect() as db:
+        db.execute("BEGIN IMMEDIATE")
+
+        pedido = db.execute("""
+            SELECT telegram_id, sale_price, status
+            FROM orders
+            WHERE id = ?
+        """, (int(order_id),)).fetchone()
+
+        if pedido is None or pedido["status"] != "processing":
+            return False
+
+        colunas = {
+            row["name"]
+            for row in db.execute("PRAGMA table_info(orders)").fetchall()
+        }
+        if "refunded" not in colunas:
+            db.execute(
+                "ALTER TABLE orders ADD COLUMN refunded INTEGER NOT NULL DEFAULT 0"
+            )
+        if "refund_notified" not in colunas:
+            db.execute(
+                "ALTER TABLE orders ADD COLUMN refund_notified INTEGER NOT NULL DEFAULT 0"
+            )
+
+        pedido = db.execute("""
+            SELECT telegram_id, sale_price, status, refunded
+            FROM orders WHERE id = ?
+        """, (int(order_id),)).fetchone()
+
+        if pedido["status"] != "processing" or int(pedido["refunded"] or 0):
+            return False
+
+        valor = round(float(pedido["sale_price"] or 0), 2)
+        if valor < 0:
+            raise ValueError("Valor de reembolso inválido.")
+
+        atualizado = db.execute("""
+            UPDATE orders
+            SET status = 'refunded', refunded = 1, refund_notified = 0
+            WHERE id = ? AND status = 'processing' AND refunded = 0
+        """, (int(order_id),))
+
+        if atualizado.rowcount != 1:
+            return False
+
+        telegram_id = int(pedido["telegram_id"])
+        db.execute("""
+            INSERT OR IGNORE INTO users (telegram_id, username, balance)
+            VALUES (?, '', 0)
+        """, (telegram_id,))
+        db.execute("""
+            UPDATE users
+            SET balance = ROUND(balance + ?, 2)
+            WHERE telegram_id = ?
+        """, (valor, telegram_id))
+
+        return True
+
+
+def marcar_reembolso_notificado(order_id):
+    with connect() as db:
+        cursor = db.execute("""
+            UPDATE orders SET refund_notified = 1
+            WHERE id = ? AND status = 'refunded'
+              AND refunded = 1 AND refund_notified = 0
+        """, (int(order_id),))
+        return cursor.rowcount == 1
+
 
 def get_profit_percent():
     with connect() as db:
@@ -314,3 +413,67 @@ def criar_pedido_com_saldo(telegram_id, service_id, link, quantity, cost, sale_p
             ),
         )
         return cursor.lastrowid, "ok"
+
+
+def registrar_reposicao(order_id, telegram_id, provider_order_id):
+    """Registra uma reposição pendente sem duplicar o pedido local."""
+    with connect() as db:
+        pedido = db.execute(
+            "SELECT telegram_id, provider_order_id FROM orders WHERE id = ?",
+            (int(order_id),),
+        ).fetchone()
+
+        if not pedido or int(pedido["telegram_id"]) != int(telegram_id):
+            return None, "pedido_invalido"
+
+        if not pedido["provider_order_id"] or str(
+            pedido["provider_order_id"]
+        ) != str(provider_order_id):
+            return None, "pedido_fornecedor_invalido"
+
+        existente = db.execute(
+            """SELECT id, status FROM refills
+               WHERE order_id = ?""",
+            (int(order_id),),
+        ).fetchone()
+
+        if existente:
+            return dict(existente), "ja_existe"
+
+        cursor = db.execute(
+            """INSERT INTO refills
+               (order_id, telegram_id, provider_order_id, status)
+               VALUES (?, ?, ?, 'submitting')""",
+            (int(order_id), int(telegram_id), str(provider_order_id)),
+        )
+        row = db.execute(
+            "SELECT id, status FROM refills WHERE id = ?",
+            (cursor.lastrowid,),
+        ).fetchone()
+        return dict(row), "criado"
+
+
+def atualizar_reposicao(refill_local_id, status, provider_refill_id=None):
+    """Atualiza o estado local e o identificador do fornecedor."""
+    with connect() as db:
+        db.execute(
+            """UPDATE refills
+               SET status = ?,
+                   provider_refill_id = COALESCE(?, provider_refill_id),
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?""",
+            (str(status), provider_refill_id, int(refill_local_id)),
+        )
+
+
+def consultar_reposicao_pedido(order_id, telegram_id):
+    """Consulta a reposição somente para o proprietário do pedido."""
+    with connect() as db:
+        row = db.execute(
+            """SELECT r.* FROM refills r
+               JOIN orders o ON o.id = r.order_id
+               WHERE r.order_id = ? AND r.telegram_id = ?
+                 AND o.telegram_id = ?""",
+            (int(order_id), int(telegram_id), int(telegram_id)),
+        ).fetchone()
+        return dict(row) if row else None

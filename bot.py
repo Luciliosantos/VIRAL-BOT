@@ -30,6 +30,7 @@ from database import (
     set_profit_percent,
 )
 from services.smm_api import SMMClient, SMMAPIError
+from database import registrar_reposicao, atualizar_reposicao
 from services.precos import calcular_preco
 from decimal import Decimal, ROUND_HALF_UP
 from urllib.parse import urlparse
@@ -39,6 +40,7 @@ from database import (
     marcar_pagamento_aprovado, atualizar_status_pedido, connect
 )
 from services.precos import calcular_preco_por_mil
+from database import reembolsar_pedido_cancelado, marcar_reembolso_notificado
 from services.mercadopago import MercadoPago, MercadoPagoError
 
 
@@ -120,6 +122,10 @@ def menu_admin():
             "📊 Consultar configuração",
             callback_data="admin_config"
         , api_kwargs={"style": "primary"})],
+        [InlineKeyboardButton(
+            "📢 Enviar mensagem",
+            callback_data="admin_broadcast"
+        , api_kwargs={"style": "success"})],
         [InlineKeyboardButton(
             "⬅️ Menu principal",
             callback_data="inicio"
@@ -553,6 +559,45 @@ async def processar_texto_compra(update, context):
         return
 
 
+def montar_comprovante_pedido(pedido, valor_pago, status="Em processamento"):
+    """Monta o resumo do pedido sem expor dados internos."""
+    service_id = str(pedido["service_id"])
+    nome_servico = f"Serviço #{service_id}"
+    reposicao = "Não informado"
+    prazo = "Não informado"
+
+    try:
+        servicos = _catalogo_cache or []
+        servico = next(
+            (
+                item for item in servicos
+                if isinstance(item, dict)
+                and str(item.get("service")) == service_id
+            ),
+            None,
+        )
+        if servico:
+            nome_servico = str(servico.get("name") or nome_servico)
+            refill = servico.get("refill")
+            if refill is True or str(refill).strip().lower() in ("true", "1", "yes"):
+                reposicao = "Sim"
+            elif refill is False or str(refill).strip().lower() in ("false", "0", "no"):
+                reposicao = "Não"
+    except Exception:
+        logger.exception("Não foi possível montar os dados do catálogo")
+
+    return (
+        "✅ PEDIDO CONFIRMADO!\n\n"
+        f"🧾 Número do pedido: #{pedido['id']}\n"
+        f"📦 Serviço: {nome_servico}\n"
+        f"🔢 Quantidade solicitada: {pedido['quantity']}\n"
+        f"💰 Valor pago: R$ {Decimal(str(valor_pago)):.2f}\n"
+        f"⏳ Prazo estimado: {prazo}\n"
+        f"🔄 Reposição: {reposicao}\n"
+        f"📊 Status: {status}\n\n"
+        "Acompanhe o andamento em Meus Pedidos."
+    )
+
 async def finalizar_compra_pix(mensagem, context, compra, usuario_id):
     order_id = None
 
@@ -909,9 +954,11 @@ async def processar_compra_com_saldo(query, context):
                 order_id, "processing", str(resposta["order"])
             )
             await query.message.reply_text(
-                f"✅ Pagamento com saldo confirmado!\n"
-                f"📦 Pedido #{order_id} enviado ao fornecedor.\n"
-                "Status: em processamento."
+                montar_comprovante_pedido(
+                    pedido,
+                    pedido["sale_price"],
+                    status="Em processamento",
+                )
             )
         except Exception as exc:
             logger.exception(
@@ -1070,9 +1117,11 @@ async def verificar_pix(query, context, payment_local_id):
                 order_id, "processing", str(resposta["order"])
             )
             await query.edit_message_text(
-                f"✅ Pagamento confirmado!\n"
-                f"📦 Pedido #{order_id} enviado ao fornecedor.\n"
-                f"Status: em processamento."
+                montar_comprovante_pedido(
+                    pedido,
+                    pedido["sale_price"],
+                    status="Em processamento",
+                )
             )
         except Exception as exc:
             logger.exception(
@@ -1365,46 +1414,427 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "pedidos":
         mensagem_com_foto = bool(query.message and query.message.photo)
         with connect() as db:
-            pedidos = db.execute(
+            resumo = db.execute(
                 """
-                SELECT id, service_id, quantity, sale_price, status, created_at
+                SELECT COUNT(*) AS quantidade,
+                       COALESCE(SUM(sale_price), 0) AS total
                 FROM orders
                 WHERE telegram_id = ?
                   AND NOT (
                       status = 'pending_payment'
                       AND datetime(created_at) <= datetime('now', '-30 minutes')
                   )
-                ORDER BY id DESC
-                LIMIT 10
                 """,
-                (int(query.from_user.id),)
+                (int(query.from_user.id),),
+            ).fetchone()
+        texto = (
+            "📦 MEUS PEDIDOS" + chr(10) + chr(10)
+            + f"🧾 PEDIDOS REALIZADOS: {int(resumo['quantidade'])}" + chr(10) + chr(10)
+            + f"💰 TOTAL GASTO: R$ {float(resumo['total']):.2f}" + chr(10) + chr(10)
+            + "📥 PARA CONSULTAR TODOS OS PEDIDOS," + chr(10)
+            + "BAIXE SEU HISTÓRICO COMPLETO."
+        )
+        await (query.edit_message_caption if mensagem_com_foto else query.edit_message_text)(
+            texto,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(
+                    "📥 BAIXAR HISTÓRICO COMPLETO",
+                    callback_data="baixar_historico",
+                    api_kwargs={"style": "success"}
+                )],
+                [InlineKeyboardButton(
+                    "🔄 SOLICITAR REPOSIÇÃO",
+                    callback_data="repor_lista",
+                    api_kwargs={"style": "success"}
+                )],
+                [InlineKeyboardButton(
+                    "🔄 Atualizar", callback_data="pedidos",
+                    api_kwargs={"style": "primary"}
+                )],
+                [InlineKeyboardButton(
+                    "⬅️ Voltar", callback_data="inicio",
+                    api_kwargs={"style": "primary"}
+                )]
+            ])
+        )
+    elif data == "repor_lista":
+        catalogo = _catalogo_cache or []
+        try:
+            if not catalogo:
+                catalogo = await SMMClient().listar_servicos()
+            elegiveis = {
+                str(servico.get("service"))
+                for servico in catalogo
+                if isinstance(servico, dict)
+                and str(servico.get("refill", "")).lower() == "true"
+            }
+            with connect() as db:
+                pedidos_repor = db.execute(
+                    """SELECT id, service_id, status, provider_order_id
+                       FROM orders
+                       WHERE telegram_id = ?
+                       ORDER BY id DESC LIMIT 100""",
+                    (int(query.from_user.id),),
+                ).fetchall()
+
+            botoes = []
+            for pedido in pedidos_repor:
+                if (
+                    str(pedido["service_id"]) in elegiveis
+                    and str(pedido["status"]).lower() in ("completed", "partial")
+                    and str(pedido["provider_order_id"] or "").isdigit()
+                ):
+                    botoes.append([InlineKeyboardButton(
+                        f"🔄 Pedido #{pedido['id']}",
+                        callback_data=f"repor:{pedido['id']}",
+                    )])
+
+            botoes.append([InlineKeyboardButton(
+                "⬅️ Voltar", callback_data="pedidos"
+            )])
+
+            texto = (
+                "🔄 SOLICITAR REPOSIÇÃO\n\n"
+                "Selecione um pedido elegível. A disponibilidade depende "
+                "das regras atuais do fornecedor."
+                if len(botoes) > 1 else
+                "Não encontrei pedidos elegíveis para reposição."
+            )
+            teclado_lista = InlineKeyboardMarkup(botoes)
+            try:
+                await query.edit_message_text(
+                    texto, reply_markup=teclado_lista
+                )
+            except Exception:
+                try:
+                    if query.message:
+                        await query.message.edit_caption(
+                            caption=texto,
+                            reply_markup=teclado_lista,
+                        )
+                    else:
+                        raise RuntimeError("Mensagem original indisponível")
+                except Exception:
+                    if query.message:
+                        await query.message.reply_text(
+                            texto, reply_markup=teclado_lista
+                        )
+                    else:
+                        raise
+        except Exception:
+            logger.exception("Falha ao listar pedidos elegíveis para reposição")
+            mensagem_erro = (
+                "Não foi possível consultar as reposições agora. "
+                "Tente novamente em instantes."
+            )
+            teclado_erro = InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅️ Voltar", callback_data="pedidos")
+            ]])
+            try:
+                await query.edit_message_text(
+                    mensagem_erro,
+                    reply_markup=teclado_erro,
+                )
+            except Exception:
+                if query.message:
+                    await query.message.reply_text(
+                        mensagem_erro,
+                        reply_markup=teclado_erro,
+                    )
+
+        return
+
+    elif data.startswith("repor_status:"):
+        partes = data.split(":")
+        if len(partes) != 2 or not partes[1].isdigit():
+            await query.answer("Pedido inválido.", show_alert=True)
+            return
+
+        local_order_id = int(partes[1])
+        telegram_id = int(query.from_user.id)
+
+        with connect() as db:
+            registro = db.execute(
+                """SELECT r.id, r.provider_refill_id
+                   FROM refills r
+                   JOIN orders o ON o.id = r.order_id
+                   WHERE r.order_id = ?
+                     AND r.telegram_id = ?
+                     AND o.telegram_id = ?""",
+                (local_order_id, telegram_id, telegram_id),
+            ).fetchone()
+
+        if not registro:
+            await query.answer("Reposição não encontrada.", show_alert=True)
+            return
+        if not registro["provider_refill_id"]:
+            await query.answer(
+                "O fornecedor ainda não confirmou o ID da reposição.",
+                show_alert=True,
+            )
+            return
+
+        try:
+            resultado = await SMMClient().consultar_status_reposicao(
+                registro["provider_refill_id"]
+            )
+            status_fornecedor = str(resultado["status"]).strip()
+            status_normalizado = status_fornecedor.lower()
+
+            if status_normalizado in ("completed", "complete"):
+                atualizar_reposicao(registro["id"], "completed")
+            elif status_normalizado in (
+                "rejected", "refused", "canceled", "cancelled"
+            ):
+                atualizar_reposicao(registro["id"], "rejected")
+            else:
+                atualizar_reposicao(registro["id"], "pending")
+
+            await query.edit_message_text(
+                f"🔄 STATUS DA REPOSIÇÃO\n\n"
+                f"Pedido: #{local_order_id}\n"
+                f"Status do fornecedor: {status_fornecedor}",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton(
+                        "🔄 Consultar novamente",
+                        callback_data=f"repor_status:{local_order_id}",
+                    )],
+                    [InlineKeyboardButton(
+                        "⬅️ Meus pedidos",
+                        callback_data="pedidos",
+                    )],
+                ]),
+            )
+        except Exception:
+            logger.exception(
+                "Falha ao consultar status da reposição do pedido %s",
+                local_order_id,
+            )
+            await query.answer(
+                "Não foi possível consultar o fornecedor agora.",
+                show_alert=True,
+            )
+        return
+
+    elif data.startswith("repor:"):
+        partes = data.split(":")
+        if len(partes) != 2 or not partes[1].isdigit():
+            await query.answer("Pedido inválido.", show_alert=True)
+            return
+
+        local_order_id = int(partes[1])
+        telegram_id = int(query.from_user.id)
+
+        with connect() as db:
+            pedido = db.execute(
+                """SELECT id, telegram_id, service_id, status,
+                          provider_order_id
+                   FROM orders WHERE id = ? AND telegram_id = ?""",
+                (local_order_id, telegram_id),
+            ).fetchone()
+
+        if not pedido:
+            await query.answer("Pedido não encontrado.", show_alert=True)
+            return
+
+        provider_order_id = str(pedido["provider_order_id"] or "").strip()
+        if (
+            not provider_order_id.isdigit()
+            or str(pedido["status"]).lower() not in ("completed", "partial")
+        ):
+            await query.answer(
+                "Este pedido não está elegível para reposição.",
+                show_alert=True,
+            )
+            return
+
+        try:
+            catalogo = _catalogo_cache or await SMMClient().listar_servicos()
+            servico = next(
+                (
+                    item for item in catalogo
+                    if isinstance(item, dict)
+                    and str(item.get("service")) == str(pedido["service_id"])
+                ),
+                None,
+            )
+            if not servico or str(servico.get("refill", "")).lower() != "true":
+                await query.answer(
+                    "O fornecedor não permite reposição para este serviço.",
+                    show_alert=True,
+                )
+                return
+
+            registro, resultado = registrar_reposicao(
+                local_order_id, telegram_id, provider_order_id
+            )
+            if resultado == "pedido_invalido":
+                await query.answer("Pedido inválido.", show_alert=True)
+                return
+            if resultado == "pedido_fornecedor_invalido":
+                await query.answer("ID do fornecedor inválido.", show_alert=True)
+                return
+            if resultado == "ja_existe":
+                await query.answer(
+                    "Já existe uma solicitação registrada para este pedido. "
+                    "Não enviaremos outra automaticamente.",
+                    show_alert=True,
+                )
+                return
+
+            await query.edit_message_text(
+                "⏳ Enviando a solicitação de reposição ao fornecedor..."
+            )
+
+            try:
+                resposta = await SMMClient().solicitar_reposicao(
+                    provider_order_id
+                )
+            except Exception:
+                atualizar_reposicao(registro["id"], "unknown")
+                logger.exception(
+                    "Resultado incerto ao solicitar reposição do pedido local %s",
+                    local_order_id,
+                )
+                await query.edit_message_text(
+                    "⚠️ Não foi possível confirmar a resposta do fornecedor. "
+                    "A solicitação ficou bloqueada para evitar duplicidade. "
+                    "Entre em contato com o suporte antes de tentar novamente."
+                )
+                return
+
+            atualizar_reposicao(
+                registro["id"], "pending", resposta["refill"]
+            )
+            await query.edit_message_text(
+                "✅ Solicitação de reposição aceita pelo fornecedor.\\n\\n"
+                f"Pedido: #{local_order_id}\\n"
+                "O processamento depende do fornecedor.",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton(
+                        "🔎 Consultar status",
+                        callback_data=f"repor_status:{local_order_id}",
+                    )],
+                    [InlineKeyboardButton(
+                        "⬅️ Meus pedidos",
+                        callback_data="pedidos",
+                    )],
+                ]),
+            )
+        except Exception:
+            logger.exception(
+                "Falha ao processar reposição do pedido local %s",
+                local_order_id,
+            )
+            await query.edit_message_text(
+                "Não foi possível processar a reposição. "
+                "Consulte o suporte antes de tentar novamente."
+            )
+        return
+
+    elif data == "baixar_historico":
+        import io
+        from datetime import datetime
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+
+        with connect() as db:
+            pedidos = db.execute(
+                """
+                SELECT id, service_id, quantity, sale_price, status, created_at
+                FROM orders
+                WHERE telegram_id = ?
+                ORDER BY id DESC
+                """,
+                (int(query.from_user.id),),
             ).fetchall()
 
         if not pedidos:
-            await (query.edit_message_caption if mensagem_com_foto else query.edit_message_text)(
-                "📦 Você ainda não tem pedidos registrados.",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("⬅️ Voltar", callback_data="inicio", api_kwargs={"style": "primary"})]
-                ])
-            )
-        else:
-            texto = "📦 SEUS PEDIDOS\n\n"
-            for pedido in pedidos:
-                texto += (
-                    f"🧾 Pedido #{pedido['id']}\n"
-                    f"🔹 Serviço: {pedido['service_id']}\n"
-                    f"🔢 Quantidade: {pedido['quantity']}\n"
-                    f"💰 Valor: R$ {float(pedido['sale_price']):.2f}\n"
-                    f"📌 Status: {pedido['status']}\n"
-                    f"📅 Data: {pedido['created_at']}\n\n"
-                )
-            await (query.edit_message_caption if mensagem_com_foto else query.edit_message_text)(
-                texto,
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("🔄 Atualizar", callback_data="pedidos", api_kwargs={"style": "primary"})],
-                    [InlineKeyboardButton("⬅️ Voltar", callback_data="inicio", api_kwargs={"style": "primary"})]
-                ])
-            )
+            await query.answer("Você ainda não tem pedidos.", show_alert=True)
+            return
+
+        catalogo = _catalogo_cache or []
+        nomes = {
+            str(servico.get("service", "")): str(servico.get("name", ""))
+            for servico in catalogo
+            if isinstance(servico, dict)
+        }
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "MEUS PEDIDOS"
+        ws.append([
+            "NÚMERO DO PEDIDO", "NOME DO SERVIÇO", "ID DO SERVIÇO",
+            "QUANTIDADE", "VALOR (R$)", "STATUS", "DATA"
+        ])
+
+        status_pt = {
+            "completed": "CONCLUÍDO",
+            "processing": "EM PROCESSAMENTO",
+            "pending": "PENDENTE",
+            "pending_payment": "AGUARDANDO PAGAMENTO",
+            "pending_supplier_funds": "AGUARDANDO FORNECEDOR",
+            "partial": "PARCIAL",
+            "canceled": "CANCELADO",
+            "cancelled": "CANCELADO",
+            "expired": "EXPIRADO",
+            "refunded": "REEMBOLSADO",
+            "in progress": "EM ANDAMENTO",
+        }
+
+        for pedido in pedidos:
+            data_pedido = pedido["created_at"]
+            try:
+                data_pedido = datetime.strptime(str(data_pedido), "%Y-%m-%d %H:%M:%S")
+            except (ValueError, TypeError):
+                data_pedido = str(data_pedido or "")
+
+            sid = str(pedido["service_id"] or "")
+            ws.append([
+                int(pedido["id"]),
+                nomes.get(sid) or "NOME NÃO DISPONÍVEL",
+                sid,
+                int(pedido["quantity"] or 0),
+                float(pedido["sale_price"] or 0),
+                status_pt.get(str(pedido["status"] or "").lower(),
+                              str(pedido["status"] or "DESCONHECIDO").upper()),
+                data_pedido,
+            ])
+
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+        ws.row_dimensions[1].height = 34
+
+        for cell in ws[1]:
+            cell.font = Font(bold=True, color="FFFFFF", size=11)
+            cell.fill = PatternFill("solid", fgColor="123B64")
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+        borda = Side(style="thin", color="D9E2F3")
+        for row in ws.iter_rows(min_row=2):
+            for cell in row:
+                cell.border = Border(bottom=borda)
+                cell.alignment = Alignment(vertical="center")
+            row[4].number_format = '"R$" #,##0.00'
+            if isinstance(row[6].value, datetime):
+                row[6].number_format = "DD/MM/YYYY HH:MM:SS"
+
+        larguras = [20, 42, 16, 15, 16, 26, 22]
+        for indice, largura in enumerate(larguras, start=1):
+            ws.column_dimensions[get_column_letter(indice)].width = largura
+
+        ws.sheet_view.showGridLines = False
+        arquivo = io.BytesIO()
+        wb.save(arquivo)
+        arquivo.seek(0)
+        arquivo.name = "historico_pedidos.xlsx"
+
+        await query.message.reply_document(
+            document=arquivo,
+            caption="📥 HISTÓRICO COMPLETO DE PEDIDOS"
+        )
+        await query.answer("Planilha Excel gerada!")
 
     elif data == "suporte":
         await query.edit_message_text(
@@ -1428,6 +1858,55 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Envie /cancelar para desistir."
             )
 
+        elif data == "admin_broadcast":
+            context.user_data["broadcast_etapa"] = "mensagem"
+            await query.edit_message_text(
+                "📢 ENVIAR MENSAGEM AOS CLIENTES\n\n"
+                "Digite o texto que deseja enviar a todos os clientes cadastrados.\n"
+                "Envie /cancelar para desistir."
+            )
+        elif data == "admin_broadcast_confirm":
+            texto = context.user_data.get("broadcast_text")
+            if context.user_data.get("broadcast_etapa") != "confirmar" or not texto:
+                await query.edit_message_text("Envio expirado.", reply_markup=menu_admin())
+                return
+            context.user_data.pop("broadcast_etapa", None)
+            context.user_data.pop("broadcast_text", None)
+            await query.edit_message_text("📤 Enviando mensagens. Aguarde...")
+            try:
+                with connect() as db:
+                    destinatarios = db.execute(
+                        "SELECT telegram_id FROM users"
+                    ).fetchall()
+            except Exception:
+                logging.exception("Falha ao consultar clientes para divulgação.")
+                await query.message.reply_text("Não foi possível consultar os clientes.")
+                return
+
+            enviados = 0
+            falhas = 0
+            for linha in destinatarios:
+                try:
+                    await context.bot.send_message(
+                        chat_id=int(linha[0]), text=texto
+                    )
+                    enviados += 1
+                except Exception:
+                    falhas += 1
+                    logging.warning("Falha ao enviar divulgação.", exc_info=True)
+                await asyncio.sleep(0.05)
+
+            await query.message.reply_text(
+                "✅ DISPARO FINALIZADO\n\n"
+                f"👥 Clientes encontrados: {len(destinatarios)}\n"
+                f"✅ Enviadas: {enviados}\n"
+                f"❌ Falhas: {falhas}",
+                reply_markup=menu_admin(),
+            )
+        elif data == "admin_broadcast_cancel":
+            context.user_data.pop("broadcast_etapa", None)
+            context.user_data.pop("broadcast_text", None)
+            await query.edit_message_text("Envio cancelado.", reply_markup=menu_admin())
         elif data == "admin_config":
             await query.edit_message_text(
                 f"⚙️ CONFIGURAÇÕES\n\n"
@@ -1442,6 +1921,29 @@ async def receber_texto(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not mensagem or mensagem.text is None:
         return
 
+    if context.user_data.get("broadcast_etapa") == "mensagem":
+        user = update.effective_user
+        if not user or user.id not in ADMIN_IDS:
+            context.user_data.pop("broadcast_etapa", None)
+            return
+        texto = mensagem.text.strip()
+        if not texto:
+            await mensagem.reply_text("Digite uma mensagem.")
+            return
+        if len(texto) > 4000:
+            await mensagem.reply_text("Mensagem muito longa. Limite: 4000 caracteres.")
+            return
+        context.user_data["broadcast_text"] = texto
+        context.user_data["broadcast_etapa"] = "confirmar"
+        await mensagem.reply_text(
+            "📋 PRÉVIA DA MENSAGEM\n\n" + texto +
+            "\n\n⚠️ Confirmar envio para os clientes cadastrados?",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Confirmar envio", callback_data="admin_broadcast_confirm", api_kwargs={"style": "success"})],
+                [InlineKeyboardButton("❌ Cancelar", callback_data="admin_broadcast_cancel", api_kwargs={"style": "danger"})],
+            ]),
+        )
+        return
     recarga = context.user_data.get("recarga")
     if recarga and recarga.get("etapa") == "email":
         email = mensagem.text.strip()
@@ -1493,6 +1995,8 @@ async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("compra", None)
     context.user_data.pop("recarga", None)
     context.user_data.pop("aguardando_lucro", None)
+    context.user_data.pop("broadcast_etapa", None)
+    context.user_data.pop("broadcast_text", None)
     await update.effective_message.reply_text("Operação cancelada.")
 
 
@@ -1506,7 +2010,7 @@ async def worker_pedidos_pendentes(app):
             with connect() as db:
                 pedidos = db.execute(
                     """
-                    SELECT id, telegram_id, service_id, link, quantity
+                    SELECT id, telegram_id, service_id, link, quantity, comments
                     FROM orders
                     WHERE status = 'pending_supplier_funds'
                       AND provider_order_id IS NULL
@@ -1540,7 +2044,11 @@ async def worker_pedidos_pendentes(app):
                         pedido["service_id"],
                         pedido["link"],
                         pedido["quantity"],
-                comments=(pedido["comments"] or None) if str(pedido["service_id"]) != "922" else None,
+                        comments=(
+                            (pedido["comments"] or None)
+                            if str(pedido["service_id"]) != "922"
+                            else None
+                        ),
                     )
 
                     numero_fornecedor = resposta.get("order")
@@ -1645,16 +2153,44 @@ async def monitorar_conclusao_pedidos(app):
         try:
             with connect() as db:
                 pedidos = db.execute("""
-                    SELECT id, telegram_id, provider_order_id
+                    SELECT id, telegram_id, provider_order_id, status
                     FROM orders
-                    WHERE status = 'processing'
-                      AND provider_order_id IS NOT NULL
+                    WHERE (
+                        status = 'processing'
+                        AND provider_order_id IS NOT NULL
+                    ) OR (
+                        status = 'refunded'
+                        AND refunded = 1
+                        AND refund_notified = 0
+                    )
                     ORDER BY id
                 """).fetchall()
 
             for pedido in pedidos:
                 order_id = int(pedido["id"])
-                provider_id = str(pedido["provider_order_id"])
+                provider_id = str(pedido["provider_order_id"] or "")
+
+                if pedido["status"] == "refunded":
+                    try:
+                        await app.bot.send_message(
+                            chat_id=int(pedido["telegram_id"]),
+                            text=(
+                                f"↩️ PEDIDO #{order_id} CANCELADO\n\n"
+                                "O pedido foi cancelado e o valor pago "
+                                "foi devolvido à sua carteira do bot."
+                            ),
+                        )
+                        marcar_reembolso_notificado(order_id)
+                        logger.info(
+                            "Cliente notificado do reembolso do pedido #%s",
+                            order_id,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Falha ao notificar reembolso do pedido #%s",
+                            order_id,
+                        )
+                    continue
 
                 try:
                     fornecedor = SMMClient()
@@ -1668,6 +2204,17 @@ async def monitorar_conclusao_pedidos(app):
                         continue
 
                     status = str(resultado.get("status", "")).strip().lower()
+                    if status in (
+                        "canceled", "cancelled", "cancel",
+                        "cancelado", "cancelada",
+                    ):
+                        if reembolsar_pedido_cancelado(order_id):
+                            logger.info(
+                                "Reembolso registrado para o pedido #%s",
+                                order_id,
+                            )
+                        continue
+
 
                     if status not in (
                         "completed", "complete", "concluído",
